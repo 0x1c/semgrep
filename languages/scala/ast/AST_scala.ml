@@ -111,7 +111,7 @@ type import_path_elem =
 type import_path = import_path_elem list [@@deriving show]
 
 type named_selector = import_path_elem * ident_or_wildcard option
-and wildcard_selector = (ident, tok * type_ option) either
+and wildcard_selector = (ident, tok * type_ option) Either_.t
 
 and import_selector =
   | NamedSelector of named_selector
@@ -147,7 +147,7 @@ and package = tok (* 'package' *) * qualified_ident
  * scala3: called simple_literal
  *)
 and literal =
-  | Int of int option wrap
+  | Int of Parsed_int.t
   | Float of float option wrap
   | Char of string wrap
   | String of string wrap (* TODO: bracket *)
@@ -175,9 +175,14 @@ and type_ =
   | TyProj of type_ * tok (* '#' *) * ident
   (* ast_orig: AppliedType *)
   | TyApplied of type_ * type_ list bracket
+  | TyAnon of tok (* '?' *) * type_bounds
   | TyInfix of type_ * ident * type_
   | TyFunction1 of type_ * tok (* '=>' *) * type_
   | TyFunction2 of type_ list bracket * tok (* '=>' *) * type_
+  (* https://docs.scala-lang.org/scala3/reference/new-types/polymorphic-function-types.html *)
+  | TyPoly of binding list * tok (* '=>' *) * type_
+  (* https://docs.scala-lang.org/scala3/reference/new-types/dependent-function-types.html *)
+  | TyDependent of (ident * type_) list * tok (* '=>' *) * type_
   | TyTuple of type_ list bracket
   | TyRepeated of type_ * tok (* '*' *)
   | TyByName of tok (* => *) * type_
@@ -280,7 +285,7 @@ and arguments =
 
 and argument = expr
 and case_clauses = (pattern, block) case_clause list
-and type_case_clauses = (((* _ *) tok, type_) either, type_) case_clause list
+and type_case_clauses = (((* _ *) tok, type_) Either_.t, type_) case_clause list
 
 and ('a, 'b) case_clause =
   | CC of ('a, 'b) case_clause_classic
@@ -355,6 +360,8 @@ and block_stat =
   | D of definition
   | I of import
   | Ex of import
+  | Ext of extension
+  | End of end_marker
   | E of expr
   (* just at the beginning of top_stat *)
   | Package of package
@@ -411,7 +418,7 @@ and type_parameter = {
   tpvariance : variance wrap option;
   tpannots : annotation list;
   (* wow, this is complicated *)
-  tpparams : type_parameters;
+  tpparams : type_parameters option;
   tpbounds : type_bounds;
   tpviewbounds : (* <% *) type_ list;
   tpcolons : (* : *) type_ list;
@@ -422,7 +429,7 @@ and variance =
   (* + *)
   | Contravariant (* - *)
 
-and type_parameters = type_parameter list bracket option
+and type_parameters = type_parameter list bracket
 
 (*****************************************************************************)
 (* Definitions *)
@@ -457,7 +464,7 @@ and entity = {
   (* can be "this" for constructor *)
   name : ident;
   attrs : attribute list;
-  tparams : type_parameters;
+  tparams : type_parameters option;
 }
 
 (* less: also work for declaration, in which case the [fc]body is empty *)
@@ -467,6 +474,24 @@ and definition_kind =
   (* class/traits/objects *)
   | Template of template_definition
 
+(*****************************************************************************)
+(* End Marker *)
+(*****************************************************************************)
+and end_marker = { end_tok : tok; end_kind : tok }
+
+(*****************************************************************************)
+(* Extensions *)
+(*****************************************************************************)
+and extension = {
+  ext_tok : tok; (* extension *)
+  ext_tparams : type_parameters option;
+  ext_using : bindings list;
+  ext_param : binding;
+  ext_methods : ext_method list;
+}
+
+and ext_method = ExtDef of definition | ExtExport of import
+
 (* ------------------------------------------------------------------------- *)
 (* Enums *)
 (* ------------------------------------------------------------------------- *)
@@ -474,7 +499,7 @@ and enum_case_definition = EnumConstr of enum_constr | EnumIds of ident list
 
 and enum_constr = {
   eid : ident;
-  etyparams : type_parameters;
+  etyparams : type_parameters option;
   eparams : bindings list;
   eattrs : attribute list;
   eextends : constr_app list;
@@ -488,6 +513,8 @@ and constr_app = type_ * arguments list
 (* ------------------------------------------------------------------------- *)
 and function_definition = {
   fkind : function_kind wrap;
+  (* scala3: polymorphic function literal type params, e.g. [T] => body *)
+  ftparams : type_parameters option;
   (* a list of list of parameters! but usually 0/1/2 *)
   fparams : bindings list;
   (* scala3? remove None and force : Unit ? *)
@@ -526,7 +553,7 @@ and parameter_classic = {
 
 and param_type =
   | PT of type_
-  | PTByNameApplication of tok (* => *) * type_
+  | PTByNameApplication of tok (* => *) * type_ * (* * *) tok option
   | PTRepeatedApplication of type_ * tok (* * *)
 
 (* ------------------------------------------------------------------------- *)
@@ -549,6 +576,7 @@ and template_definition = {
 and template_parents = {
   cextends : (type_ * arguments list) option;
   cwith : type_ list;
+  cderives : type_ list;
 }
 
 and template_body = (self_type option * block) bracket
@@ -570,7 +598,7 @@ and template_kind =
 (* ------------------------------------------------------------------------- *)
 and given_sig = {
   g_id : ident option;
-  g_tparams : type_parameters;
+  g_tparams : type_parameters option;
   g_using : bindings list;
   g_colon : tok;
 }
@@ -600,14 +628,19 @@ type program = top_stat list [@@deriving show]
 (* Any *)
 (*****************************************************************************)
 
-type any = Pr of program | Ex of expr | Ss of block | Tk of tok
+type any =
+  | Pr of program
+  | Ex of expr
+  | Ss of block
+  | Cs of (pattern, block) case_clause
+  | Tk of tok
 [@@deriving show { with_path = false }]
 
 (*****************************************************************************)
 (* Helpers *)
 (*****************************************************************************)
 
-let empty_cparents = { cextends = None; cwith = [] }
+let empty_cparents = { cextends = None; cwith = []; cderives = [] }
 let attrs_of_mods xs = List.map (fun x -> M x) xs
 let attrs_of_annots xs = List.map (fun x -> A x) xs
 let mods_with_annots mods annots = attrs_of_annots annots @ attrs_of_mods mods

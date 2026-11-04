@@ -1,6 +1,6 @@
 (* Yoann Padioleau
  *
- * Copyright (C) 2021 R2C
+ * Copyright (C) 2021 Semgrep Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public License
@@ -14,8 +14,7 @@
  *)
 open Token_scala
 module PI = Lib_ast_fuzzy
-
-let logger = Logging.get_logger [ __MODULE__ ]
+module Log = Log_parser_scala.Log
 
 (*****************************************************************************)
 (* Token Helpers *)
@@ -64,7 +63,7 @@ let visitor_info_of_tok f = function
   | ID_UPPER (s, ii) -> ID_UPPER (s, f ii)
   | ID_BACKQUOTED (s, ii) -> ID_BACKQUOTED (s, f ii)
   | OP (s, ii) -> OP (s, f ii)
-  | IntegerLiteral (x, ii) -> IntegerLiteral (x, f ii)
+  | IntegerLiteral pi -> IntegerLiteral (Parsed_int.map_tok f pi)
   | FloatingPointLiteral (x, ii) -> FloatingPointLiteral (x, f ii)
   | CharacterLiteral (x, ii) -> CharacterLiteral (x, f ii)
   | BooleanLiteral (x, ii) -> BooleanLiteral (x, f ii)
@@ -129,13 +128,11 @@ let visitor_info_of_tok f = function
   | Kpackage ii -> Kpackage (f ii)
   | Koverride ii -> Koverride (f ii)
   | Kobject ii -> Kobject (f ii)
-  | Kenum ii -> Kenum (f ii)
   | Knull ii -> Knull (f ii)
   | Knew ii -> Knew (f ii)
   | Kmatch ii -> Kmatch (f ii)
   | Klazy ii -> Klazy (f ii)
   | Kimport ii -> Kimport (f ii)
-  | Kexport ii -> Kexport (f ii)
   | Kimplicit ii -> Kimplicit (f ii)
   | Kif ii -> Kif (f ii)
   | KforSome ii -> KforSome (f ii)
@@ -161,7 +158,7 @@ let info_of_tok tok =
       ii)
     tok
   |> ignore;
-  Common2.some !res
+  Option.get !res
 
 let abstract_info_tok tok = visitor_info_of_tok (fun _ -> Tok.abstract_tok) tok
 
@@ -205,7 +202,7 @@ let inFirstOfStat x =
   | DEDENT _ ->
       false
   | _ ->
-      logger#info "inFirstOfStat: true for %s" (Dumper.dump x);
+      Log.debug (fun m -> m "inFirstOfStat: true for %s" (Dumper.dump x));
       true
 
 (** Can token end a statement? *)
@@ -242,13 +239,30 @@ let inLastOfStat x =
   (* semgrep-ext: *)
   | Ellipsis _
   | RDots _ ->
-      logger#info "inLastOfStat: true for %s" (Dumper.dump x);
+      Log.debug (fun m -> m "inLastOfStat: true for %s" (Dumper.dump x));
       true
   | _ -> false
 
 (* ------------------------------------------------------------------------- *)
 (* Used in the parser *)
 (* ------------------------------------------------------------------------- *)
+
+(* This function is for using a token of lookahead to check whether we should
+   enter an exportClause.
+   Since an `export` used as a keyword is always followed by an `id`, we can
+   prevent more false positives of `export` used as a keyword when it shouldn't,
+   by looking ahead a token.
+*)
+let isPathStart = function
+  | ID_LOWER _
+  | ID_UPPER _
+  | ID_BACKQUOTED _
+  | OP _
+  | ID_DOLLAR _
+  | Kthis _
+  | Ksuper _ ->
+      true
+  | _ -> false
 
 let isIdent = function
   | ID_LOWER ("given", _) -> None
@@ -339,6 +353,17 @@ let isStatSep = function
 let isStatSeqEnd = function
   | RBRACE _
   | DEDENT _
+  (* This is here so we know how to end a blockStatSeq which is the "then"
+     expression in an if-then-else, like
+     if (true)
+       val x = 2
+       val y = 3
+     else
+       4
+     It should be safe to put this here, because there shouldn't be another reason
+     to see an `else`.
+  *)
+  | Kelse _
   | EOF _ ->
       true
   | _ -> false
@@ -377,15 +402,20 @@ let isLocalModifier = function
 (* Construct Intro *)
 (* ------------------------------------------------------------------------- *)
 
-let isTemplateIntro = function
-  | Kobject _
-  | Kclass _
-  | Kenum _
-  | Ktrait _
-  | ID_LOWER ("given", _) ->
+(* Some keywords are "soft keywords", which means they are lexed as identifiers,
+   but contextually may act as keywords.
+   When deciding if we want to parse a templateStat, we first check for
+   expressions. This would incorrectly flag these soft keywords, which can
+   otherwise start a templateStat, so this function whitelists them to not
+   enter the `expr` case, in favor of parsing them as templateStat keywords.
+*)
+let isTemplateStatIntroSoftKeyword = function
+  | ID_LOWER ("enum", _)
+  | ID_LOWER ("given", _)
+  | ID_LOWER ("end", _)
+  | ID_LOWER ("export", _)
+  | ID_LOWER ("extension", _) ->
       true
-  (*TODO | Kcaseobject | | Kcaseclass *)
-  | Kcase _ -> true
   | _ -> false
 
 let isDclIntro = function
@@ -422,7 +452,17 @@ let isExprIntro x =
       true
   | _ -> false
 
-let isDefIntro x = isTemplateIntro x || isDclIntro x
+let isTemplateDefIntro x =
+  match x with
+  | Kobject _
+  | Kclass _
+  | Ktrait _
+  | ID_LOWER ("enum", _)
+  | ID_LOWER ("given", _) ->
+      true
+  | _ -> false
+
+let isDefIntro x = isDclIntro x || isTemplateDefIntro x
 
 let isTypeIntroToken x =
   (isLiteral x && not (isNull x))

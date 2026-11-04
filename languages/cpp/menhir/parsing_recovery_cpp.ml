@@ -21,12 +21,7 @@ module TH = Token_helpers_cpp
 (*****************************************************************************)
 (* Wrappers *)
 (*****************************************************************************)
-let pr2_err, _pr2_once = Common2.mk_pr2_wrappers Flag.verbose_parsing
-let pr2_err s = pr2_err ("ERROR_RECOV: " ^ s)
-
-(*****************************************************************************)
-(* Helpers *)
-(*****************************************************************************)
+let pr2_err s = Printf.eprintf "ERROR_RECOV: %s" s
 
 (*****************************************************************************)
 (* Skipping stuff, find next "synchronisation" point *)
@@ -61,14 +56,14 @@ let rec find_next_synchro ~next ~already_passed =
   else
     let before, after =
       last_round
-      |> Common.span (fun tok ->
-             match tok with
-             (* by looking at TOBrace we are sure that the "start of something"
-              * will not arrive too early
-              *)
-             | T.TOBrace _ -> false
-             | T.TDefine _ -> false
-             | _ -> true)
+      |> List_.span (fun tok ->
+          match tok with
+          (* by looking at TOBrace we are sure that the "start of something"
+           * will not arrive too early
+           *)
+          | T.TOBrace _ -> false
+          | T.TDefine _ -> false
+          | _ -> true)
     in
     find_next_synchro_orig (after @ next) (List.rev before)
 

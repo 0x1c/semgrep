@@ -1,3 +1,15 @@
+#
+# Copyright (c) 2021-2025 Semgrep Inc.
+#
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of the GNU Lesser General Public License
+# version 2.1 as published by the Free Software Foundation.
+#
+# This library is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the file
+# LICENSE for more details.
+#
 import importlib.resources
 import os
 import shutil
@@ -5,9 +17,12 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from semgrep.util import IS_WINDOWS
 from semgrep.verbose_logging import getLogger
 
 logger = getLogger(__name__)
+
+VERSION_STAMP_FILENAME = "pro-installed-by.txt"
 
 
 def compute_executable_path(exec_name: str) -> Optional[str]:
@@ -16,8 +31,13 @@ def compute_executable_path(exec_name: str) -> Optional[str]:
 
     Return None if no executable found
     """
+    if IS_WINDOWS:
+        exec_name += ".exe"
+
     # First, try packaged binaries
     try:
+        # TODO: .path() is deprecated, use .files() instead to avoid
+        # annoying deprecation notice when running tests
         with importlib.resources.path("semgrep.bin", exec_name) as path:
             if path.is_file():
                 return str(path)
@@ -82,3 +102,7 @@ class SemgrepCore:
             cls._PRO_PATH_ = compute_executable_path("semgrep-core-proprietary")
 
         return Path(cls._PRO_PATH_) if cls._PRO_PATH_ is not None else None
+
+    @classmethod
+    def pro_version_stamp_path(cls) -> Path:
+        return cls.path().parent / VERSION_STAMP_FILENAME

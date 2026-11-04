@@ -55,26 +55,26 @@ and ctx =
    into a (1-char) lhs and rhs. Used to convert `>>` into two `>`
 *)
 let split_two_char pi =
-  let lhs = { pi with Tok.str = String.sub pi.Tok.str 0 1 } in
+  let lhs = { pi with Loc.str = String.sub pi.Loc.str 0 1 } in
   let rhs =
     {
-      Tok.str = String.sub pi.Tok.str 1 1;
+      Loc.str = String.sub pi.Loc.str 1 1;
       pos =
-        { pi.pos with charpos = pi.pos.charpos + 1; column = pi.pos.column + 1 };
+        { pi.pos with bytepos = pi.pos.bytepos + 1; column = pi.pos.column + 1 };
     }
   in
   (lhs, rhs)
 
 let split_two_char_info i =
   let tok =
-    match i.Tok.token with
+    match i with
     | Tok.OriginTok t -> t
     | _ -> failwith "Parse error..."
   in
 
   let lhspi, rhspi = split_two_char tok in
-  let lhs = { Tok.token = Tok.OriginTok lhspi; transfo = Tok.NoTransfo } in
-  let rhs = { Tok.token = Tok.OriginTok rhspi; transfo = Tok.NoTransfo } in
+  let lhs = Tok.OriginTok lhspi in
+  let rhs = Tok.OriginTok rhspi in
   (lhs, rhs)
 
 (*
@@ -128,10 +128,10 @@ let find_paren_tokens toks replace =
     | x :: xs -> (
         match x with
         | TCPAR t ->
-            let x' = if depth == 0 && replace then T_LAMBDA_CPAR t else x in
+            let x' = if depth =|= 0 && replace then T_LAMBDA_CPAR t else x in
             aux xs (x' :: acc) (depth + 1)
         | TOPAR t ->
-            if depth == 1 then
+            if depth =|= 1 then
               let x' = if replace then T_LAMBDA_OPAR t else x in
               (List.rev (x' :: acc), xs)
             else aux xs (x :: acc) (depth - 1)
@@ -182,7 +182,7 @@ let find_typehint toks =
         | TCBRACE _ ->
             ([], []) (* absolutely will not be in a typehint *)
         | TCOLON _ ->
-            if depth == 0 then (List.rev (x :: acc), xs)
+            if depth =|= 0 then (List.rev (x :: acc), xs)
             else aux xs (x :: acc) depth
         | _ -> aux xs (x :: acc) depth)
   in
@@ -294,4 +294,4 @@ let fix_tokens xs =
         aux { env with stack } (x :: acc) xs
   in
   aux { stack = [ Toplevel ]; misc = () } [] xs
-  [@@profiling]
+[@@profiling]

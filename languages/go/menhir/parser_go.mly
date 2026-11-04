@@ -22,6 +22,7 @@
  *  at https://github.com/golang/go
  *)
 open Common
+open Either_
 open AST_generic (* for the arithmetic operator *)
 open Ast_go
 
@@ -165,7 +166,7 @@ let rev_and_fix_items xs =
 (*-----------------------------------------*)
 
 (* tokens with "values" (was LLITERAL before) *)
-%token  <int option * Ast_go.tok> LINT
+%token  <Parsed_int.t> LINT
 %token  <float option * Ast_go.tok>  LFLOAT
 %token  <string * Ast_go.tok>  LIMAG  LRUNE LSTR
 %token  <AST_generic.operator * Ast_go.tok> LASOP
@@ -370,7 +371,7 @@ import:
 |   LIMPORT import_stmt
       { [$2 $1] }
 |   LIMPORT "(" listsc_t(import_stmt_or_dots) ")"
-      { $3 |> Common.filter_some |> List.map (fun f -> f $1) }
+      { $3 |> List_.filter_some |> List.map (fun f -> f $1) }
 |   LIMPORT "(" ")" { [] }
 
 import_stmt_or_dots:
@@ -548,7 +549,7 @@ select_stmt:  LSELECT LBODY caseblock_list "}"
     { Select ($1, List.rev $3) }
 
 case:
-|   LCASE listc(expr_or_type) ":"           { CaseExprs ($1, $2) }
+|   LCASE listc(expr_or_type) ":"           { CaseExprs ($1, List.rev $2) }
 |   LCASE listc(expr_or_type) "=" expr ":"  { CaseAssign ($1, $2, $3, $4) }
 |   LCASE listc(expr_or_type) ":=" expr ":" { CaseAssign ($1, $2, $3, $4) }
 |   LDEFAULT ":"                            { CaseDefault $1 }
@@ -626,7 +627,8 @@ expr:
 |   expr "&" expr     { mk_bin $1 BitAnd $2 $3 }
 |   expr LANDNOT expr  { mk_bin $1 BitNot (* BitAndNot aka BitClear *) $2 $3 }
 |   expr LLSH expr     { mk_bin $1 LSL $2 $3 }
-|   expr LRSH expr     { mk_bin $1 LSR $2 $3 }
+(* signed >>: ASR by default; see AST_generic.operator *)
+|   expr LRSH expr     { mk_bin $1 ASR $2 $3 }
 
 (* old: was in expression, to give better error message, but better here *)
 |   expr "<-" expr    { Send ($1, $2, $3) }
@@ -924,7 +926,8 @@ expr_no_dots:
 |   expr "&" expr     { mk_bin $1 BitAnd $2 $3 }
 |   expr LANDNOT expr  { mk_bin $1 BitNot (* BitAndNot aka BitClear *) $2 $3 }
 |   expr LLSH expr     { mk_bin $1 LSL $2 $3 }
-|   expr LRSH expr     { mk_bin $1 LSR $2 $3 }
+(* signed >>: ASR by default; see AST_generic.operator *)
+|   expr LRSH expr     { mk_bin $1 ASR $2 $3 }
 |   expr "<-" expr    { Send ($1, $2, $3) }
 
 

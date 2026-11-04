@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Compares behavior of two versions of Semgrep on a rule ID. See the Python
+# docstring below for compare() for more information.
 import os
 import subprocess
 import sys
@@ -64,7 +66,7 @@ def compare(start: str, end: str, snippet: str, use_podman: bool) -> int:
             *(["--security-opt", "label=disable"] if use_podman else []),
             "-v",
             f"{dir}:/src",
-            f"returntocorp/semgrep:{version}",
+            f"semgrep/semgrep:{version}",
             "semgrep",
             "scan",
             "--config",

@@ -81,13 +81,13 @@ let mk_trees h xs =
   (* filter comment tokens *)
   let xs =
     xs
-    |> Common.exclude (fun t ->
-           let kind = h.kind t in
-           match kind with
-           | Esthet _
-           | Eof ->
-               true
-           | _ -> false)
+    |> List_.exclude (fun t ->
+        let kind = h.kind t in
+        match kind with
+        | Esthet _
+        | Eof ->
+            true
+        | _ -> false)
   in
 
   let rec consume x xs =
@@ -106,7 +106,7 @@ let mk_trees h xs =
         let body' = split_comma body in
         (Ast_fuzzy.Parens (h.tokf x, body', h.tokf closing), rest)
     | tok -> (Ast_fuzzy.Tok (Tok.content_of_tok (h.tokf tok), h.tokf x), xs)
-    (*
+  (*
     (match Ast.str_of_info (tokext tok) with
     | "..." -> Ast_fuzzy.Dots (tokext tok)
     | s when Ast_fuzzy.is_metavar s -> Ast_fuzzy.Metavar (s, tokext tok)
@@ -144,13 +144,13 @@ let mk_trees h xs =
   and split_comma xs =
     let rec aux acc xs =
       match xs with
-      | [] -> if null acc then [] else [ Left (acc |> List.rev) ]
+      | [] -> if List_.null acc then [] else [ Either.Left (acc |> List.rev) ]
       | x :: xs -> (
           match x with
           | Ast_fuzzy.Tok (",", info) ->
               let before = acc |> List.rev in
-              if null before then aux [] xs
-              else Left before :: Right info :: aux [] xs
+              if List_.null before then aux [] xs
+              else Either.Left before :: Either.Right info :: aux [] xs
           | _ -> aux (x :: acc) xs)
     in
     aux [] xs
@@ -272,7 +272,7 @@ let (toks_of_trees : trees -> Tok.t list) =
  fun trees ->
   let globals = ref [] in
   let hooks =
-    { default_visitor with ktok = (fun (_k, _) i -> Common.push i globals) }
+    { default_visitor with ktok = (fun (_k, _) i -> Stack_.push i globals) }
   in
   let vout = mk_visitor hooks in
   vout trees;
@@ -283,6 +283,6 @@ let (toks_of_trees : trees -> Tok.t list) =
 (*****************************************************************************)
 
 let abstract_position_trees trees =
-  let hooks = { mtok = (fun _k i -> { i with Tok.token = Tok.Ab }) } in
+  let hooks = { mtok = (fun _k _i -> Tok.Ab) } in
   let mapper = mk_mapper hooks in
   mapper trees

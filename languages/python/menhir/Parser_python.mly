@@ -86,7 +86,7 @@ let tuple_expr_store l =
 
 let mk_str ii =
   let s = Tok.content_of_tok ii in
-  Str (s, ii)
+  Literal( Str (s, ii))
 
 %}
 
@@ -109,7 +109,7 @@ let mk_str ii =
 
 (* tokens with "values" *)
 %token <string * AST_python.tok> NAME
-%token <int option    * AST_python.tok> INT LONGINT
+%token <Parsed_int.t> INT LONGINT
 %token <float option  * AST_python.tok> FLOAT
 %token <string * AST_python.tok> IMAG
 %token <string * string * AST_python.tok> STR
@@ -239,6 +239,8 @@ nl_or_stmt:
  | stmt    { $1 }
 
 sgrep_spatch_pattern:
+ (* for decorator patterns @$NAME(...) *)
+ | decorator EOF { Flag_parsing.sgrep_guard (Decorator $1) }
  | stmt NEWLINE? EOF   {
    match $1 with
    | [ExprStmt x] -> Expr x
@@ -361,10 +363,10 @@ namedexpr_or_star_expr:
 (*************************************************************************)
 (* this rule is referenced in compound_stmt shown later *)
 funcdef: DEF NAME parameters return_type? ":" suite
-    { FunctionDef ($1, $2, $3, $4, $6, []) }
+    { FunctionDef ($1, $2, None, $3, $4, $6, []) }
 
 async_funcdef: ASYNC DEF NAME parameters return_type? ":" suite
-    { FunctionDef ($2, $3, $4, $5, $7, [] (* TODO $1 *)) }
+    { FunctionDef ($2, $3, None, $4, $5, $7, [] (* TODO $1 *)) }
 
 (* typing-ext: *)
 return_type:
@@ -387,7 +389,7 @@ typedargslist:
 typed_parameter:
   | tfpdef_or_fpdef { ParamPattern (fst $1, snd $1) }
   (* TODO check default args come after variable args later *)
-  | tfpdef "=" test { ParamDefault ($1, $3) }
+  | tfpdef "=" test { ParamDefault ((PatternName (fst $1), snd $1), $3) }
   | "*" tfpdef      { ParamStar ($1, $2) }
   | "*"             { ParamSingleStar $1 }
   (* python3-ext: https://www.python.org/dev/peps/pep-0570/ *)
@@ -419,7 +421,7 @@ varargslist:
 (* python3-ext: can be in any order, ParamStar before or after Classic *)
 parameter:
   | fpdef           { ParamPattern ($1, None) }
-  | NAME "=" test   { ParamDefault (($1, None), $3) }
+  | NAME "=" test   { ParamDefault ((PatternName $1, None), $3) }
   | "*" NAME        { ParamStar ($1, ($2, None)) }
   (* python3-ext: https://www.python.org/dev/peps/pep-0570/ *)
   | "/"             { ParamSlash $1 }
@@ -438,7 +440,7 @@ fplist:
 (*************************************************************************)
 
 classdef: CLASS NAME arglist_paren_opt ":" suite
-  { ClassDef ($1, $2, $3, $5, []) }
+  { ClassDef ($1, $2, None, $3, $5, []) }
 
 arglist_paren_opt:
  | (* empty *) { [] }
@@ -450,18 +452,8 @@ arglist_paren_opt:
 (* Annotations *)
 (*************************************************************************)
 
-decorator: "@" decorator_name arglist_paren2_opt NEWLINE
-    { $1, $2, $3 }
-
-decorator_name:
-  | NAME                    { [$1] }
-  | decorator_name "." NAME { $1 @ [$3] }
-
-arglist_paren2_opt:
- | (* empty *) { None }
- | "(" ")"     { Some ($1, [], $2) }
- (* python3-ext: was expr_list before *)
- | "(" list_comma(argument) ")" { Some ($1, $2, $3) }
+decorator: "@" namedexpr_test NEWLINE
+    { $1, $2 }
 
 (*************************************************************************)
 (* Statement *)
@@ -570,17 +562,17 @@ compound_stmt:
 decorated:
   | decorator+ classdef {
      match $2 with
-     | ClassDef (t, a, b, c, d) -> ClassDef (t, a, b, c, $1 @ d)
+     | ClassDef (t, a, b, c, d, e) -> ClassDef (t, a, b, c, d, $1 @ e)
      | _ -> raise Impossible
    }
   | decorator+ funcdef {
      match $2 with
-     | FunctionDef (t, a, b, c, d, e) -> FunctionDef (t, a, b, c, d, $1 @ e)
+     | FunctionDef (t, a, b, c, d, e, f) -> FunctionDef (t, a, b, c, d, e, $1 @ f)
      | _ -> raise Impossible
    }
   | decorator+ async_funcdef {
      match $2 with
-     | FunctionDef (t, a, b, c, d, e) -> FunctionDef (t, a, b, c, d, $1 @ e)
+     | FunctionDef (t, a, b, c, d, e, f) -> FunctionDef (t, a, b, c, d, e, $1 @ f)
      | _ -> raise Impossible
   }
 
@@ -612,22 +604,24 @@ for_stmt:
 
 try_stmt:
   | TRY ":" suite excepthandler+
-      { TryExcept ($1, $3, $4, []) }
+      { TryExcept ($1, $3, $4, None, None) }
   | TRY ":" suite excepthandler+ ELSE ":" suite
-      { TryExcept ($1, $3, $4, $7) }
+      { TryExcept ($1, $3, $4, Some ($5, $7), None) }
   | TRY ":" suite excepthandler+ ELSE ":" suite FINALLY ":" suite
-      { TryFinally ($1, [TryExcept ($1, $3, $4, $7)], $8, $10) }
+      { TryExcept ($1, $3, $4, Some ($5, $7), Some ($8, $10)) }
   | TRY ":" suite excepthandler+ FINALLY ":" suite
-      { TryFinally ($1, [TryExcept ($1, $3, $4, [])], $5, $7) }
+      { TryExcept ($1, $3, $4, None, Some ($5, $7)) }
   | TRY ":" suite FINALLY ":" suite
-      { TryFinally ($1, $3, $4, $6) }
+      { TryExcept ($1, $3, [], None, Some ($4, $6)) }
 
 excepthandler:
-  | EXCEPT              ":" suite { ExceptHandler ($1, None, None, $3) }
-  | EXCEPT test         ":" suite { ExceptHandler ($1, Some $2, None, $4) }
-  | EXCEPT test AS NAME ":" suite { ExceptHandler ($1, Some $2, Some $4, $6)}
-  (* python2: *)
-  | EXCEPT test "," NAME ":" suite { ExceptHandler ($1, Some $2, Some $4, $6) }
+  | EXCEPT                  ":" suite { ExceptHandler ($1, None, None, $3) }
+  (* python3-ext: https://peps.python.org/pep-0758/ (was 'except A, e:' in python2) *)
+  | EXCEPT     tuple(test)  ":" suite { ExceptHandler ($1, Some (tuple_expr $2), None, $4) }
+  | EXCEPT     test AS NAME ":" suite { ExceptHandler ($1, Some $2, Some $4, $6) }
+  (* python3-ext: https://peps.python.org/pep-0654/ *)
+  | EXCEPT "*" tuple(test)  ":" suite { ExceptHandler ($1, Some (tuple_expr $3), None, $5) }
+  | EXCEPT "*" test AS NAME ":" suite { ExceptHandler ($1, Some $3, Some $5, $7) }
 
 with_stmt:
   | WITH with_inner ":" suite                         { $2 ($1, $4) }
@@ -777,15 +771,15 @@ type_for_lsif:
 atom:
   | NAME        { Name ($1, Load) }
 
-  | INT         { Num (Int ($1)) }
-  | LONGINT     { Num (LongInt ($1)) }
-  | FLOAT       { Num (Float ($1)) }
-  | IMAG        { Num (Imag ($1)) }
+  | INT         { Literal (Num (Int $1)) }
+  | LONGINT     { Literal (Num (LongInt ($1))) }
+  | FLOAT       { Literal (Num (Float ($1))) }
+  | IMAG        { Literal (Num (Imag ($1))) }
 
-  | TRUE        { Bool (true, $1) }
-  | FALSE       { Bool (false, $1) }
+  | TRUE        { Literal (Bool (true, $1)) }
+  | FALSE       { Literal (Bool (false, $1)) }
 
-  | NONE        { None_ $1 }
+  | NONE        { Literal (None_ $1) }
 
   | string+ {
      match $1 with
@@ -816,11 +810,11 @@ testlist1:
 
 string:
   | STR { let (s, pre, tok) = $1 in
-          if pre = "" then Str (s, tok) else EncodedStr ((s, tok), pre) }
+          if pre = "" then Literal (Str (s, tok)) else EncodedStr ((s, tok), pre) }
   | FSTRING_START interpolated* FSTRING_END { InterpolatedString ($1, $2, $3) }
 
 interpolated:
-  | FSTRING_STRING { Str $1 }
+  | FSTRING_STRING { Literal (Str $1) }
   | FSTRING_LBRACE interpolant fstring_print_spec "}" { InterpolatedString ($1, $2::$3, $4) }
 
 fstring_print_spec:

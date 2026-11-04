@@ -4,6 +4,8 @@
  (wrapped false)
  (libraries
    alcotest
+   testo
    commons
+   eio_main
  )
 )

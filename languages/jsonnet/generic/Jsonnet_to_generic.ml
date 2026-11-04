@@ -32,7 +32,7 @@ module G = AST_generic
 (*****************************************************************************)
 let map_string _env x = x
 let map_bool _env x = x
-let map_list f env xs = Common.map (f env) xs
+let map_list f env xs = List.map (f env) xs
 let map_option f env x = Option.map (f env) x
 
 (*****************************************************************************)
@@ -76,7 +76,7 @@ let rec map_expr env v : G.expr =
       let defs = (map_list map_bind) env v2 in
       let _tsemi = map_tok env v3 in
       let e = map_expr env v4 in
-      let stmts = defs |> Common.map (fun def -> G.DefStmt def |> G.s) in
+      let stmts = defs |> List.map (fun def -> G.DefStmt def |> G.s) in
       let block = Tok.unsafe_fake_bracket (stmts @ [ G.exprstmt e ]) in
       G.stmt_to_expr (G.Block block |> G.s)
   | DotAccess (v1, v2, v3) ->
@@ -145,8 +145,9 @@ let rec map_expr env v : G.expr =
       let e = map_expr env v2 in
       G.OtherExpr (("Error", terror), [ G.E e ]) |> G.e
   | ParenExpr v ->
-      let v = (map_bracket map_expr) env v in
-      G.ParenExpr v |> G.e
+      let l, e, r = (map_bracket map_expr) env v in
+      AST_generic_helpers.set_e_range l r e;
+      e
   | Ellipsis v ->
       let tdots = map_tok env v in
       G.Ellipsis tdots |> G.e
@@ -187,8 +188,10 @@ and map_string_content env v = (map_list (map_wrap map_string)) env v
 
 and map_special _env v =
   match v with
-  | Self -> fun tk -> G.IdSpecial (G.Self, tk) |> G.e
-  | Super -> fun tk -> G.IdSpecial (G.Super, tk) |> G.e
+  | Self ->
+      fun tk -> G.N (G.IdSpecial ((G.Self, tk), G.empty_id_info ())) |> G.e
+  | Super ->
+      fun tk -> G.N (G.IdSpecial ((G.Super, tk), G.empty_id_info ())) |> G.e
   | Dollar -> fun tk -> G.N (G.Id (("$", tk), G.empty_id_info ())) |> G.e
 
 and map_argument env v : G.argument =
@@ -217,7 +220,11 @@ and map_binary_op _env v =
   | Div -> G.Div
   | Mod -> G.Mod
   | LSL -> G.LSL
-  | LSR -> G.LSR
+  (* DO NOT 'fix' this looks-like-a-typo mapping. The Jsonnet internal AST's
+   * [LSR] is the source-level `>>` operator, which is arithmetic /
+   * sign-extending per the Jsonnet spec and the evaluator. See
+   * Eval_jsonnet_common.ml (uses Int64.shift_right). *)
+  | LSR -> G.ASR
   | Lt -> G.Lt
   | LtE -> G.LtE
   | Gt -> G.Gt
@@ -241,7 +248,7 @@ and map_assert_ env (v1, v2, v3) : G.stmt =
   in
   let eopt = (map_option map_tuple) env v3 in
   let es = e :: Option.to_list eopt in
-  let args = es |> Common.map G.arg in
+  let args = es |> List.map G.arg in
   let st = G.Assert (tassert, Tok.unsafe_fake_bracket args, G.sc) |> G.s in
   st
 
@@ -294,7 +301,7 @@ and map_bind env v : G.definition =
       let _teq = map_tok env v2 in
       let e = map_expr env v3 in
       let ent = G.basic_entity id in
-      let def = G.VarDef { G.vinit = Some e; vtype = None } in
+      let def = G.VarDef { G.vinit = Some e; vtype = None; vtok = G.no_sc } in
       (ent, def)
 
 and map_function_definition env v : G.function_definition =
@@ -347,7 +354,7 @@ and map_obj_member env v : G.field =
       G.F stmt
   | OEllipsis v ->
       let tdots = map_tok env v in
-      G.fieldEllipsis tdots
+      G.field_ellipsis tdots
 
 and map_field env v : G.definition =
   let { fld_name; fld_attr; fld_hidden; fld_value } = v in
@@ -355,9 +362,11 @@ and map_field env v : G.definition =
   let _fld_attrTODO = (map_option map_attribute) env fld_attr in
   let _fld_hiddenTODO = (map_wrap map_hidden) env fld_hidden in
   let fld_value = map_expr env fld_value in
-  let ent = { G.name = entname; tparams = []; attrs = [] } in
+  let ent = { G.name = entname; tparams = None; attrs = [] } in
   (* alt? FldDefColon? *)
-  let def = G.VarDef { G.vinit = Some fld_value; vtype = None } in
+  let def =
+    G.VarDef { G.vinit = Some fld_value; vtype = None; vtok = G.no_sc }
+  in
   (ent, def)
 
 and map_field_name env v : G.entity_name =
@@ -370,7 +379,8 @@ and map_field_name env v : G.entity_name =
       G.EN (G.Id ((s, tk), G.empty_id_info ()))
   | FDynamic v ->
       let l, e, r = (map_bracket map_expr) env v in
-      G.EDynamic (G.ParenExpr (l, e, r) |> G.e)
+      AST_generic_helpers.set_e_range l r e;
+      G.EDynamic e
 
 and map_hidden _env v =
   match v with
@@ -394,21 +404,22 @@ and map_obj_comprehension env v =
   let defs1 = (map_list map_obj_local) env oc_locals1 in
   let map_tuple env (v1, v2, v3) =
     let l, e1, r = (map_bracket map_expr) env v1 in
+    AST_generic_helpers.set_e_range l r e1;
     let _tcolon = map_tok env v2 in
     let e = map_expr env v3 in
-    let entname = G.EDynamic (G.ParenExpr (l, e1, r) |> G.e) in
-    let ent = { G.name = entname; tparams = []; attrs = [] } in
-    let def = G.VarDef { G.vinit = Some e; vtype = None } in
+    let entname = G.EDynamic e1 in
+    let ent = { G.name = entname; tparams = None; attrs = [] } in
+    let def = G.VarDef { G.vinit = Some e; vtype = None; vtok = G.no_sc } in
     (ent, def)
   in
   let def, for_if_comps = (map_comprehension2 map_tuple) env oc_comp in
   let defs2 = (map_list map_obj_local) env oc_locals2 in
   fun (l, r) ->
     let any =
-      (defs1 |> Common.map (fun (_tlocal, def) -> G.Def def))
+      (defs1 |> List.map (fun (_tlocal, def) -> G.Def def))
       @ [ G.Def def ]
-      @ (for_if_comps |> Common.map (fun for_if -> G.ForOrIfComp for_if))
-      @ (defs2 |> Common.map (fun (_tlocal, def) -> G.Def def))
+      @ (for_if_comps |> List.map (fun for_if -> G.ForOrIfComp for_if))
+      @ (defs2 |> List.map (fun (_tlocal, def) -> G.Def def))
       @ [ G.Tk r ]
     in
     G.OtherExpr (("ObjComprehension", l), any) |> G.e
